@@ -246,12 +246,6 @@
   // label — a section's entire innerText, say — would defeat the point.
   const MAX_LABEL_LENGTH = 80;
 
-  // Upper bound on how many elements a locator match filter may confirm through
-  // the layout-forcing innerText path. Past the cap an ambiguous element counts
-  // as a match, so the output over-reports matches rather than claiming a
-  // uniqueness it never verified.
-  const MAX_TEXT_MATCH_CONFIRMATIONS = 50;
-
   // --- Attribute-Based Selector Score Tables ---
   // Used by the unified _buildAttributeBasedSelectors method.
   // Each entry defines the attribute, the score when bare (no tag prefix),
@@ -300,10 +294,6 @@
       pos += sub.length;
     }
     return count;
-  }
-
-  function stripWhitespace(str) {
-    return String(str || '').replace(/\s+/g, '');
   }
 
   class FrameOfReferencePicker {
@@ -2859,7 +2849,6 @@
 
     findRoleNameMatches(root, role, name) {
       const selector = this.getRoleQuerySelector(role);
-      const budget = { remaining: MAX_TEXT_MATCH_CONFIRMATIONS };
       const matches = [];
 
       for (const element of root.querySelectorAll(selector)) {
@@ -2869,7 +2858,7 @@
           continue;
         }
 
-        if (this._matchesPrimaryLabel(element, name, budget)) {
+        if (this._matchesPrimaryLabel(element, name)) {
           matches.push(element);
         }
       }
@@ -2878,11 +2867,10 @@
     }
 
     findTagTextMatches(root, tag, textValue) {
-      const budget = { remaining: MAX_TEXT_MATCH_CONFIRMATIONS };
       const matches = [];
 
       for (const element of root.querySelectorAll(tag)) {
-        if (this._matchesPrimaryLabel(element, textValue, budget)) {
+        if (this._matchesPrimaryLabel(element, textValue)) {
           matches.push(element);
         }
       }
@@ -2906,52 +2894,31 @@
     }
 
     // Equality test against getPrimaryLabel(summarizeElement(element)) that skips
-    // the full summary and reaches innerText only when it has to.
+    // building a full summary.
     //
-    // getPrimaryLabel reduces to firstNonEmpty(attributeLabel, innerText, name),
+    // getPrimaryLabel reduces to firstNonEmpty(attributeLabel, text, name),
     // because every source it lists ahead of summary.text already appears inside
-    // extractElementText. So an element with any attribute label never needs its
-    // text read at all. When it has none, textContent answers the common case for
-    // free; innerText — which forces layout — is consulted only for elements whose
-    // textContent still plausibly contains the expected label, and only until the
-    // budget runs out. These filters run over every node querySelectorAll returns,
-    // which on a page of hundreds of buttons was a reflow per element per copy.
-    _matchesPrimaryLabel(element, expected, budget) {
-      if (!expected) {
-        return false;
-      }
-
+    // extractElementText. So an element carrying any attribute label never needs
+    // its text read at all, which is where the saving comes from.
+    //
+    // The text case deliberately reads innerText, exactly as extractElementText
+    // does. Deriving the answer from textContent instead is not sound: innerText
+    // drops display:none subtrees, so textContent both over-matches (an element
+    // whose visible label is "Save" would answer to "CancelSave") and, when
+    // hidden content splits visible text, fails to match its own label.
+    _matchesPrimaryLabel(element, expected) {
       const attributeLabel = this._getAttributeLabel(element);
       if (attributeLabel) {
         return attributeLabel === expected;
       }
 
-      const textContent = this.normalizeWhitespace(element.textContent || '');
-      if (textContent === expected) {
-        return true;
+      const text = this.normalizeWhitespace(element.innerText || element.textContent || '');
+      if (text) {
+        return text === expected;
       }
 
-      if (!textContent) {
-        // No text anywhere, so the label falls through to the name attribute.
-        return this.normalizeWhitespace(element.getAttribute('name') || '') === expected;
-      }
-
-      // innerText can still differ from textContent: it drops hidden subtrees and
-      // inserts separators at block boundaries. It never invents non-whitespace
-      // characters though, so if the expected label's characters are absent from
-      // textContent, innerText cannot match either.
-      if (!stripWhitespace(textContent).includes(stripWhitespace(expected))) {
-        return false;
-      }
-
-      if (budget.remaining <= 0) {
-        // Out of budget and genuinely ambiguous. Count it as a match so the
-        // output over-reports rather than claiming an unverified uniqueness.
-        return true;
-      }
-
-      budget.remaining -= 1;
-      return this.normalizeWhitespace(element.innerText || element.textContent || '') === expected;
+      // No text anywhere, so the label falls through to the name attribute.
+      return this.normalizeWhitespace(element.getAttribute('name') || '') === expected;
     }
 
     getRoleQuerySelector(role) {

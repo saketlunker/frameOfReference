@@ -25,6 +25,8 @@ function loadPicker({ html = '<!doctype html><html><body></body></html>', url = 
     dom.window.CSS = Object.assign({}, dom.window.CSS, { escape: cssEscape });
   }
 
+  installInnerText(dom.window);
+
   dom.window.eval(PICKER_SOURCE);
 
   const picker = dom.window.__FRAMEOFREFERENCE_PICKER__;
@@ -56,6 +58,60 @@ function cssEscape(value) {
   }
 
   return result;
+}
+
+// Tags whose boundaries Chrome renders as a line break inside innerText.
+const BLOCK_TAGS = new Set([
+  'address', 'article', 'aside', 'blockquote', 'div', 'dd', 'dl', 'dt', 'fieldset',
+  'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'header', 'hr', 'li', 'main', 'nav', 'ol', 'option', 'p', 'pre', 'section',
+  'table', 'td', 'th', 'tr', 'ul'
+]);
+
+// jsdom implements no layout, so it has no innerText at all. Without this the
+// picker's `element.innerText || element.textContent` always takes the
+// textContent branch, and the tests silently stop covering the path Chrome
+// actually runs — which is where the label for an unlabelled element comes from.
+//
+// This is an approximation, not a layout engine: it reproduces the two
+// behaviours that change a label's value, namely that hidden subtrees are
+// dropped and that block boundaries become separators.
+function installInnerText(window) {
+  const isRendered = (element) => {
+    if (element.hasAttribute('hidden')) {
+      return false;
+    }
+
+    const style = (element.getAttribute('style') || '').replace(/\s+/g, '').toLowerCase();
+    return !style.includes('display:none') && !style.includes('visibility:hidden');
+  };
+
+  const collect = (node) => {
+    let text = '';
+
+    for (const child of node.childNodes) {
+      if (child.nodeType === 3) {
+        text += child.nodeValue;
+        continue;
+      }
+
+      if (child.nodeType !== 1 || !isRendered(child)) {
+        continue;
+      }
+
+      const isBlock = BLOCK_TAGS.has(child.tagName.toLowerCase());
+      text += isBlock ? `\n${collect(child)}\n` : collect(child);
+    }
+
+    return text;
+  };
+
+  Object.defineProperty(window.Element.prototype, 'innerText', {
+    configurable: true,
+    get() {
+      return isRendered(this) ? collect(this) : '';
+    }
+  });
 }
 
 module.exports = { loadPicker };

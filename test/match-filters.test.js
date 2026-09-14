@@ -1,9 +1,15 @@
 'use strict';
 
 // Coverage for the locator match filters. These used to build a full element
-// summary — and therefore read innerText, forcing layout — for every node
-// querySelectorAll returned. The behaviour they encode must survive the
-// cheaper implementation.
+// summary for every node querySelectorAll returned; the cheaper implementation
+// must answer identically to getPrimaryLabel in every case.
+//
+// The hidden-content tests below are the important ones. An earlier version of
+// this optimisation decided matches from textContent, which looks equivalent
+// but is not: innerText drops display:none subtrees, so textContent both
+// over-matched and — when hidden content split visible text — failed to match an
+// element against its own label. jsdom has no innerText of its own, so these
+// only bite once the harness supplies one.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -65,8 +71,11 @@ test('the name attribute is the last label fallback', () => {
   assert.deepEqual(idsOf(picker.findRoleNameMatches(document, 'textbox', 'Save')), ['named']);
 });
 
-test('an empty expected label never matches', () => {
-  assert.deepEqual(idsOf(picker.findTagTextMatches(document, 'button', '')), []);
+test('an empty expected label matches only elements that have no label', () => {
+  // buildLocatorCandidates never creates a candidate without a label, so this
+  // case is unreachable in practice. It is asserted to keep the filter exactly
+  // equivalent to getPrimaryLabel rather than approximately so.
+  assert.deepEqual(idsOf(picker.findTagTextMatches(document, 'button', '')), ['empty']);
 });
 
 test('hidden descendant text does not hide a visible label', () => {
@@ -89,5 +98,73 @@ test('the filter agrees with the label the locator candidate was built from', ()
     const matches = picker.findRoleNameMatches(document, summary.role, label);
 
     assert.ok(matches.includes(element), `${id} should match its own extracted label`);
+  }
+});
+
+test('hidden text does not make an element answer to a label it does not have', () => {
+  // The visible label is "Save"; only the decoy is really named "CancelSave".
+  const { picker: scoped, document: scopedDocument } = loadPicker({
+    html: `<!doctype html><html><body>
+      <button id="hidden-prefix"><span style="display:none">Cancel</span>Save</button>
+      <button id="decoy">CancelSave</button>
+    </body></html>`
+  });
+
+  assert.equal(
+    scoped.getPrimaryLabel(scoped.summarizeElement(scopedDocument.getElementById('hidden-prefix'))),
+    'Save'
+  );
+  assert.deepEqual(idsOf(scoped.findTagTextMatches(scopedDocument, 'button', 'CancelSave')), ['decoy']);
+});
+
+test('an element whose visible text is split by hidden content still matches itself', () => {
+  const { picker: scoped, document: scopedDocument } = loadPicker({
+    html: '<!doctype html><html><body><button id="split">Sa<span style="display:none">XX</span>ve</button></body></html>'
+  });
+
+  const element = scopedDocument.getElementById('split');
+  const label = scoped.getPrimaryLabel(scoped.summarizeElement(element));
+
+  assert.equal(label, 'Save');
+  assert.ok(
+    scoped.findTagTextMatches(scopedDocument, 'button', label).includes(element),
+    'an element that cannot match its own label loses its readable locator'
+  );
+});
+
+test('the filter answers identically to getPrimaryLabel across a mixed page', () => {
+  // Property-style sweep: for every element and every label in play, the cheap
+  // filter and the authoritative getPrimaryLabel must agree exactly.
+  const { picker: scoped, document: scopedDocument } = loadPicker({
+    html: `<!doctype html><html><body>
+      <button id="a"><span style="display:none">Cancel</span>Save</button>
+      <button id="b">CancelSave</button>
+      <button id="c" aria-label="Save">Discard</button>
+      <button id="d" hidden>Save</button>
+      <button id="e">Sa<span hidden>XX</span>ve</button>
+      <div id="f" role="button"><p>One</p><p>Two</p></div>
+      <button id="g"></button>
+    </body></html>`
+  });
+
+  const elements = Array.from(scopedDocument.querySelectorAll('button, div[role]'));
+  const labels = new Set(['Save', 'CancelSave', 'Discard', 'One Two', 'OneTwo']);
+  for (const element of elements) {
+    labels.add(scoped.getPrimaryLabel(scoped.summarizeElement(element)));
+  }
+
+  for (const label of labels) {
+    if (!label) {
+      continue;
+    }
+
+    const expected = elements
+      .filter((element) => scoped.getPrimaryLabel(scoped.summarizeElement(element)) === label)
+      .map((element) => element.id)
+      .sort();
+
+    const actual = idsOf(scoped.findTagTextMatches(scopedDocument, 'button, div[role]', label));
+
+    assert.deepEqual(actual, expected, `mismatch for label ${JSON.stringify(label)}`);
   }
 });
