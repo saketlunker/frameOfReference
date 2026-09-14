@@ -324,6 +324,7 @@
       this._feedbackResolve = null;
       this._copyInFlight = false;
       this._copyGeneration = 0;
+      this._viewportGeneration = 0;
       this._listenersAttached = false;
 
       this.handlePointerMove = this.handlePointerMove.bind(this);
@@ -714,6 +715,7 @@
         return;
       }
 
+      this._viewportGeneration += 1;
       if (!this.pendingPointer && !this.currentTarget) {
         return;
       }
@@ -3324,6 +3326,25 @@
     // this value so it always resolves the channel first. See background.js.
     static CAPTURE_RESPONSE_TIMEOUT_MS = 3000;
 
+    getVisibleScreenshotRect(rect, viewport) {
+      if (
+        !rect ||
+        ![rect.left, rect.top, rect.width, rect.height, viewport.width, viewport.height].every(Number.isFinite) ||
+        rect.width <= 0 ||
+        rect.height <= 0 ||
+        viewport.width <= 0 ||
+        viewport.height <= 0
+      ) {
+        return null;
+      }
+
+      const left = Math.max(0, rect.left);
+      const top = Math.max(0, rect.top);
+      const right = Math.min(viewport.width, rect.left + rect.width);
+      const bottom = Math.min(viewport.height, rect.top + rect.height);
+      return right > left && bottom > top ? { left, top, right, bottom } : null;
+    }
+
     // Captures a cropped screenshot of the target element's bounding rect.
     // The entire flow is in-memory: captureVisibleTab returns a data URL string,
     // which is loaded into an Image, cropped on an off-screen Canvas, and exported
@@ -3331,7 +3352,8 @@
     async captureElementScreenshot(target) {
       try {
         const rect = target.getBoundingClientRect();
-        if (!rect || rect.width <= 0 || rect.height <= 0) {
+        const viewport = { width: window.innerWidth, height: window.innerHeight };
+        if (!this.getVisibleScreenshotRect(rect, viewport)) {
           return null;
         }
 
@@ -3342,57 +3364,87 @@
           return null;
         }
 
+        // Pinch zoom uses a different visual viewport from the layout coordinates.
+        if (window.visualViewport && window.visualViewport.scale !== 1) {
+          return null;
+        }
+
         // Skip very large elements that would produce oversized screenshots.
-        const viewportArea = window.innerWidth * window.innerHeight;
+        const viewportArea = viewport.width * viewport.height;
         const elementArea = rect.width * rect.height;
         if (elementArea > viewportArea * FrameOfReferencePicker.SCREENSHOT_MAX_VIEWPORT_FRACTION) {
           return null;
         }
 
-        // Hide the overlay so it doesn't appear in the screenshot. The
-        // try/finally ensures the overlay is always restored, regardless of
-        // whether the rAF, sendMessage, or cropScreenshot steps throw or reject.
+        const copyGeneration = this._copyGeneration;
+        const viewportGeneration = this._viewportGeneration;
+        const scrollX = window.scrollX;
+        const scrollY = window.scrollY;
+        const dpr = window.devicePixelRatio;
+        const isCurrent = () => {
+          const currentRect = target.getBoundingClientRect();
+          const unchanged =
+            this.isCopyOperationCurrent(copyGeneration) &&
+            target.isConnected &&
+            this._viewportGeneration === viewportGeneration &&
+            window.innerWidth === viewport.width &&
+            window.innerHeight === viewport.height &&
+            window.scrollX === scrollX &&
+            window.scrollY === scrollY &&
+            window.devicePixelRatio === dpr &&
+            (!window.visualViewport || window.visualViewport.scale === 1) &&
+            ['left', 'top', 'width', 'height'].every((key) => currentRect[key] === rect[key]);
+          if (!unchanged) {
+            console.debug('Frame of Reference: discarding screenshot after the page or picker changed.');
+          }
+          return unchanged;
+        };
+        if (!isCurrent()) {
+          return null;
+        }
+
+        // Restore this capture's overlay, not one created by a newer session
+        // while the screenshot response was pending.
         let response;
-        const previousDisplay = this.overlayRoot ? this.overlayRoot.style.display : '';
+        const overlayRoot = this.overlayRoot;
+        const previousDisplay = overlayRoot ? overlayRoot.style.display : '';
         try {
-          if (this.overlayRoot) {
-            this.overlayRoot.style.display = 'none';
+          if (overlayRoot) {
+            overlayRoot.style.display = 'none';
           }
 
           // Wait one frame for the paint to flush before capturing.
           await new Promise((resolve) => requestAnimationFrame(resolve));
+          if (!isCurrent()) {
+            return null;
+          }
 
           response = await this.sendRuntimeMessageForResponse(
             { type: 'frameofreference:capture' },
             FrameOfReferencePicker.CAPTURE_RESPONSE_TIMEOUT_MS
           );
         } finally {
-          if (this.overlayRoot) {
-            this.overlayRoot.style.display = previousDisplay;
+          if (overlayRoot) {
+            overlayRoot.style.display = previousDisplay;
           }
         }
 
-        if (!response || !response.ok || !response.dataUrl) {
+        if (!response || !response.ok || !response.dataUrl || !isCurrent()) {
           return null;
         }
 
-        return await this.cropScreenshot(response.dataUrl, rect);
+        const image = await this.cropScreenshot(response.dataUrl, rect, viewport);
+        return isCurrent() ? image : null;
       } catch (error) {
         console.debug('Frame of Reference: screenshot capture failed', error);
         return null;
       }
     }
 
-    // Crops a full-tab screenshot (data URL) to the target element's bounding rect,
-    // accounting for devicePixelRatio. Returns a PNG Blob or null.
-    async cropScreenshot(dataUrl, rect) {
-      const dpr = window.devicePixelRatio || 1;
-      const cropX = Math.round(rect.left * dpr);
-      const cropY = Math.round(rect.top * dpr);
-      const cropW = Math.round(rect.width * dpr);
-      const cropH = Math.round(rect.height * dpr);
-
-      if (cropW <= 0 || cropH <= 0) {
+    // Map the visible intersection to the actual bitmap, including browser scaling.
+    async cropScreenshot(dataUrl, rect, viewport = { width: window.innerWidth, height: window.innerHeight }) {
+      const visible = this.getVisibleScreenshotRect(rect, viewport);
+      if (!visible) {
         return null;
       }
 
@@ -3404,12 +3456,12 @@
         image.src = dataUrl;
       });
 
-      // Clamp crop region to image bounds — the element may be partially
-      // off-screen, making the computed rect extend beyond the captured area.
-      const clampedX = Math.max(0, Math.min(cropX, img.naturalWidth));
-      const clampedY = Math.max(0, Math.min(cropY, img.naturalHeight));
-      const clampedW = Math.min(cropW, img.naturalWidth - clampedX);
-      const clampedH = Math.min(cropH, img.naturalHeight - clampedY);
+      const scaleX = img.naturalWidth / viewport.width;
+      const scaleY = img.naturalHeight / viewport.height;
+      const clampedX = Math.round(visible.left * scaleX);
+      const clampedY = Math.round(visible.top * scaleY);
+      const clampedW = Math.round(visible.right * scaleX) - clampedX;
+      const clampedH = Math.round(visible.bottom * scaleY) - clampedY;
 
       if (clampedW <= 0 || clampedH <= 0) {
         return null;
@@ -3437,6 +3489,7 @@
     // text/plain preserves plain-text paste. Return false so the caller can
     // preserve the core text-only copy if this richer write is unavailable.
     async copyTextAndImage(text, imageBlob) {
+      const copyGeneration = this._copyGeneration;
       if (
         !navigator.clipboard ||
         typeof navigator.clipboard.write !== 'function' ||
@@ -3451,6 +3504,9 @@
 
       try {
         const imageDataUrl = await this.blobToDataUrl(imageBlob);
+        if (!this.isCopyOperationCurrent(copyGeneration)) {
+          return false;
+        }
         const textBlob = new Blob([text], { type: 'text/plain' });
         const htmlBlob = new Blob([this.buildClipboardHtml(text, imageDataUrl)], { type: 'text/html' });
         const item = new ClipboardItem({
@@ -3495,6 +3551,7 @@
     // --- Clipboard ---
 
     async copyText(text) {
+      const copyGeneration = this._copyGeneration;
       if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
         try {
           await navigator.clipboard.writeText(text);
@@ -3504,6 +3561,9 @@
         }
       }
 
+      if (!this.isCopyOperationCurrent(copyGeneration)) {
+        return false;
+      }
       return this.copyTextFallback(text);
     }
 
