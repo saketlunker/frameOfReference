@@ -81,3 +81,84 @@ test('chooseBestTargetCandidate promotes the button over its wrapper', () => {
 
   assert.equal(picker.chooseBestTargetCandidate(button, [button, wrapper]), button);
 });
+
+// --- Area-based scoring ---
+// jsdom performs no layout, so every rect is 0x0 unless a test supplies one.
+// Without these stubs the AREA_THRESHOLDS and TINY_AREA branches never run.
+
+function scoreWithRect(scoped, element, width, height) {
+  element.getBoundingClientRect = () => ({
+    width,
+    height,
+    top: 0,
+    left: 0,
+    right: width,
+    bottom: height
+  });
+
+  return scoped.scoreTargetCandidate(element, null, { element, stackIndex: 0, ancestorDepth: 0 }, null, null);
+}
+
+test('a candidate covering most of the viewport is penalised', () => {
+  const { picker: scoped, document: scopedDocument, window } = loadPicker({
+    html: '<!doctype html><html><body><div id="area">Panel</div></body></html>'
+  });
+
+  const element = scopedDocument.getElementById('area');
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+
+  const modest = scoreWithRect(scoped, element, w * 0.2, h * 0.2);
+  const huge = scoreWithRect(scoped, element, w * 0.95, h * 0.95);
+
+  assert.ok(huge < modest, 'a near-fullscreen wrapper is rarely what the user meant');
+});
+
+test('the area penalty deepens as the candidate grows', () => {
+  const { picker: scoped, document: scopedDocument, window } = loadPicker({
+    html: '<!doctype html><html><body><div id="area">Panel</div></body></html>'
+  });
+
+  const element = scopedDocument.getElementById('area');
+  const area = (ratio) => scoreWithRect(scoped, element, window.innerWidth * ratio, window.innerHeight);
+
+  // Ratios chosen to sit either side of each configured threshold.
+  const small = area(0.3);
+  const mid = area(0.5);
+  const large = area(0.7);
+  const full = area(0.9);
+
+  assert.ok(small > mid, 'crossing the first threshold should cost something');
+  assert.ok(mid > large, 'crossing the second threshold should cost more');
+  assert.ok(large > full, 'crossing the third threshold should cost most');
+});
+
+test('a sub-pixel non-interactive candidate is penalised', () => {
+  const { picker: scoped, document: scopedDocument } = loadPicker({
+    html: '<!doctype html><html><body><div id="area">Panel</div></body></html>'
+  });
+
+  const element = scopedDocument.getElementById('area');
+
+  const normal = scoreWithRect(scoped, element, 120, 40);
+  const invisible = scoreWithRect(scoped, element, 0.01, 0.01);
+
+  assert.ok(invisible < normal, 'a tracking pixel is not a useful target');
+});
+
+test('an interactive element is exempt from the tiny-area penalty', () => {
+  const { picker: scoped, document: scopedDocument } = loadPicker({
+    html: '<!doctype html><html><body><button id="tiny">x</button><div id="plain">x</div></body></html>'
+  });
+
+  const button = scopedDocument.getElementById('tiny');
+  const div = scopedDocument.getElementById('plain');
+
+  const buttonSmall = scoreWithRect(scoped, button, 0.01, 0.01);
+  const buttonNormal = scoreWithRect(scoped, button, 120, 40);
+  const divSmall = scoreWithRect(scoped, div, 0.01, 0.01);
+  const divNormal = scoreWithRect(scoped, div, 120, 40);
+
+  assert.equal(buttonSmall, buttonNormal, 'a small button is still a button');
+  assert.ok(divSmall < divNormal, 'a small plain div is not');
+});

@@ -57,6 +57,7 @@ background.js      Service worker
 content/picker.js  Core picker logic (single IIFE)
 icons/             Extension icons (SVG + PNGs)
 test/              Node test-runner suite (devDependencies only)
+test-support/      Test harnesses for the picker and the service worker
 ```
 
 ## Tests
@@ -68,7 +69,9 @@ npm install
 npm test
 ```
 
-The suite loads `content/picker.js` into a jsdom window and reads the picker instance off `globalThis.__FRAMEOFREFERENCE_PICKER__`, exactly as Chrome does. Nothing about the extension is restructured to make it testable.
+The suite loads `content/picker.js` into a jsdom window and reads the picker instance off `globalThis.__FRAMEOFREFERENCE_PICKER__`, exactly as Chrome does. `background.js` is loaded the same way — evaluated against a stubbed `chrome` global, with its listeners captured and driven directly. Neither file is restructured to make it testable.
+
+jsdom has no layout engine, so the harness supplies the two things the picker depends on and jsdom lacks: `CSS.escape`, and a `innerText` that drops hidden subtrees the way Chrome's does. Element rects are stubbed per test where size matters.
 
 ## Limitations
 

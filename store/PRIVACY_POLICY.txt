@@ -14,6 +14,8 @@ The extension requires the following permissions solely for its core functionali
 
 - activeTab: To access the content of the currently active tab when the user
   activates the picker. Only used on the tab the user explicitly clicks.
+- alarms: To schedule clearing the toolbar badge after it briefly reports the
+  result of a pick. No data is stored in or read from alarms.
 - clipboardWrite: To copy the generated element reference to the clipboard.
 - scripting: To inject the picker script into the active tab.
 
