@@ -22,6 +22,8 @@ Each line serves a purpose: `Path` gives page context, `Target` describes what y
 
 When supported by Chrome and the paste target, the clipboard also includes a cropped screenshot of the selected element alongside the text reference. If rich clipboard image copy is unavailable, the extension preserves the text-only copy path.
 
+Screenshots include only the visible part of the selected element. If the page scrolls, resizes, or moves the element during capture, the extension copies text only rather than attaching a mismatched image. Fully off-screen elements, large targets, iframe contents, and pinch-zoomed pages also use text-only copy. Cancelling or restarting the picker discards unfinished captures.
+
 ## Install
 
 1. Open `chrome://extensions`
