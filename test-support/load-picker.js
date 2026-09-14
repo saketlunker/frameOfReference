@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { JSDOM } = require('jsdom');
 
-const PICKER_SOURCE = fs.readFileSync(path.join(__dirname, '..', '..', 'content', 'picker.js'), 'utf8');
+const PICKER_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'content', 'picker.js'), 'utf8');
 
 // Creates a fresh jsdom window, evaluates picker.js inside it, and returns the
 // picker instance together with the window and document it is bound to.

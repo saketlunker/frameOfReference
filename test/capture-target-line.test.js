@@ -7,7 +7,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadPicker } = require('./helpers/load-picker.js');
+const { loadPicker } = require('../test-support/load-picker.js');
 
 const LONG_TEXT =
   'Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor ' +
