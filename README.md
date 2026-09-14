@@ -1,6 +1,6 @@
 # Frame of Reference
 
-A Chrome extension that lets you point at any UI element and copy a compact, LLM-ready reference to your clipboard. Then paste it into your LLM and ask for the change you want.
+A Chromium extension to refer UX elements for agent context. Point at any UI element and copy a compact, exact reference to your clipboard. Then paste it into your LLM and ask for the change you want.
 
 **3 steps, no setup, low token cost.**
 
@@ -52,11 +52,23 @@ When supported by Chrome and the paste target, the clipboard also includes a cro
 ## Project layout
 
 ```
-manifest.json      Chrome extension manifest (MV3)
-background.js      Service worker (~260 lines)
-content/picker.js  Core picker logic (~3300 lines, single IIFE)
+manifest.json      Chromium extension manifest (MV3)
+background.js      Service worker
+content/picker.js  Core picker logic (single IIFE)
 icons/             Extension icons (SVG + PNGs)
+test/              Node test-runner suite (devDependencies only)
 ```
+
+## Tests
+
+The shipped extension has no build step and no runtime dependencies — "Load unpacked" works straight from a clone. Tests are the only thing that needs `npm`, and they live entirely in devDependencies.
+
+```bash
+npm install
+npm test
+```
+
+The suite loads `content/picker.js` into a jsdom window and reads the picker instance off `globalThis.__FRAMEOFREFERENCE_PICKER__`, exactly as Chrome does. Nothing about the extension is restructured to make it testable.
 
 ## Limitations
 

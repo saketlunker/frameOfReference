@@ -15,7 +15,11 @@ const MESSAGE_TYPE_RESULT = 'frameofreference:result';
 const MESSAGE_TYPE_CAPTURE = 'frameofreference:capture';
 const RESULT_KINDS = new Set(['copied', 'cancelled', 'error']);
 const SUPPORTED_PROTOCOL_PREFIXES = ['http://', 'https://'];
-const CAPTURE_RESPONSE_TIMEOUT_MS = 5000;
+// Must stay strictly shorter than FrameOfReferencePicker.CAPTURE_RESPONSE_TIMEOUT_MS
+// in content/picker.js (3000ms). The worker has to resolve the message channel
+// before the content script stops listening, otherwise sendResponse fires into a
+// channel nobody is reading and the worker is held alive for the difference.
+const CAPTURE_RESPONSE_TIMEOUT_MS = 2500;
 const BADGE_CLEAR_ALARM_PREFIX = 'frameofreference-clear-badge:';
 const BADGE_CLEAR_ALARM_SEPARATOR = ':';
 const BADGE_CLEAR_ALARM_GRACE_MS = 5000;

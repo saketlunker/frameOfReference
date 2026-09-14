@@ -1,0 +1,14 @@
+{
+  "name": "frameofreference",
+  "version": "1.0.1",
+  "description": "Chromium extension to refer UX elements for agent context",
+  "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/saketlunker/frameOfReference",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "devDependencies": {
+    "jsdom": "^26.0.0"
+  }
+}

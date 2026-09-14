@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Frame of Reference",
-  "homepage_url": "https://github.com/saketlunker/frameofreference",
-  "description": "Pick a page element and copy compact, exact, LLM-ready context for precise UI edits.",
-  "version": "1.0.0",
+  "homepage_url": "https://github.com/saketlunker/frameOfReference",
+  "description": "Chromium extension to refer UX elements for agent context",
+  "version": "1.0.1",
   "permissions": ["activeTab", "alarms", "clipboardWrite", "scripting"],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"

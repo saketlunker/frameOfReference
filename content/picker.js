@@ -240,17 +240,29 @@
   const LABEL_ATTR_INDICATORS = ['[aria-label', '[name=', '[title=', '[placeholder='];
   const STRONG_SELECTOR_INDICATORS = [...ID_OR_TEST_INDICATORS, ...STABLE_ATTR_INDICATORS, ...LABEL_ATTR_INDICATORS];
 
+  // --- Output Length Limits ---
+  // Every human-readable label written into the capture output is clipped to this
+  // length. The extension's whole value is a compact reference, so an unbounded
+  // label — a section's entire innerText, say — would defeat the point.
+  const MAX_LABEL_LENGTH = 80;
+
+  // Upper bound on how many elements a locator match filter may confirm through
+  // the layout-forcing innerText path. Past the cap an ambiguous element counts
+  // as a match, so the output over-reports matches rather than claiming a
+  // uniqueness it never verified.
+  const MAX_TEXT_MATCH_CONFIRMATIONS = 50;
+
   // --- Attribute-Based Selector Score Tables ---
   // Used by the unified _buildAttributeBasedSelectors method.
   // Each entry defines the attribute, the score when bare (no tag prefix),
   // the score with tag prefix, and whether the value needs clipping.
   const EXACT_SCORE_TABLE = {
-    id: { bare: 240, tagged: 236, bareOnly: true },
+    id: { bare: 240, tagged: 236 },
     dataTestId: { bare: 226, tagged: 222 },
     name: { bare: 210, tagged: 206 },
-    ariaLabel: { bare: 204, tagged: 200, clip: 80 },
-    title: { bare: 184, tagged: 180, clip: 80 },
-    placeholder: { bare: 176, tagged: 172, clip: 80 },
+    ariaLabel: { bare: 204, tagged: 200, clip: MAX_LABEL_LENGTH },
+    title: { bare: 184, tagged: 180, clip: MAX_LABEL_LENGTH },
+    placeholder: { bare: 176, tagged: 172, clip: MAX_LABEL_LENGTH },
     href: { tagged: 170, maxLength: 120 },
     src: { tagged: 168, maxLength: 120 },
     role: { bare: 160, tagged: 156, requiresExplicit: true },
@@ -258,12 +270,12 @@
   };
 
   const LOCATOR_SCORE_TABLE = {
-    id: { tagged: 100, tagOnly: true },
+    id: { tagged: 100 },
     dataTestId: { tagged: 94 },
     name: { tagged: 84 },
-    ariaLabel: { tagged: 82, clip: 80 },
-    placeholder: { tagged: 74, clip: 80 },
-    title: { tagged: 70, clip: 80 },
+    ariaLabel: { tagged: 82, clip: MAX_LABEL_LENGTH },
+    placeholder: { tagged: 74, clip: MAX_LABEL_LENGTH },
+    title: { tagged: 70, clip: MAX_LABEL_LENGTH },
     role: { tagged: 64, requiresExplicit: true },
     type: { tagged: 54, inputOnly: true }
   };
@@ -288,6 +300,10 @@
       pos += sub.length;
     }
     return count;
+  }
+
+  function stripWhitespace(str) {
+    return String(str || '').replace(/\s+/g, '');
   }
 
   class FrameOfReferencePicker {
@@ -2076,7 +2092,11 @@
         return `Target: ${targetDescriptor} (selected element)`;
       }
 
-      return `Target: ${targetDescriptor} "${primaryLabel}" (selected element)`;
+      // primaryLabel can fall all the way back to the element's innerText, which
+      // is unbounded — selecting a section or a card would otherwise dump the
+      // whole subtree onto this line. Clip like every other emitted label.
+      const clippedLabel = this.clipText(primaryLabel, MAX_LABEL_LENGTH);
+      return `Target: ${targetDescriptor} "${clippedLabel}" (selected element)`;
     }
 
     buildCompactPath() {
@@ -2181,7 +2201,7 @@
         const selectorBody = `[${attr}="${escaped}"]`;
         const nth = allowSiblingNth;
 
-        if (bare !== undefined && !opts.tagOnly) {
+        if (bare !== undefined) {
           this._addUniqueSelector(seen, list, selectorBody, bare, element, nth);
         }
         if (tagged !== undefined) {
@@ -2192,8 +2212,8 @@
       const t = scoreTable;
 
       if (t.id && summary.id) {
-        if (t.id.bareOnly || t.id.bare !== undefined) {
-          this._addUniqueSelector(seen, list, `#${CSS.escape(summary.id)}`, t.id.bare || t.id.tagged, element, false);
+        if (t.id.bare !== undefined) {
+          this._addUniqueSelector(seen, list, `#${CSS.escape(summary.id)}`, t.id.bare, element, false);
         }
         if (t.id.tagged !== undefined) {
           this._addUniqueSelector(seen, list, `${tag}#${CSS.escape(summary.id)}`, t.id.tagged, element, false);
@@ -2262,8 +2282,55 @@
         text: `${location.hostname || location.host || 'page'}##${segments
           .map((segment) => segment.selector)
           .join(' >>> ')}`,
-        matchCount: segments.length > 1 ? 1 : segments[0].matchCount
+        matchCount: this._countShadowChainMatches(segments)
       };
+    }
+
+    // Resolves an `a >>> b >>> c` chain for real and returns how many elements it
+    // lands on. Each segment's match count was only ever measured inside its own
+    // root, so a multi-segment chain's uniqueness is not established by those
+    // numbers — it used to be hardcoded to 1, which made the output assert a
+    // precision nothing had checked.
+    //
+    // When the walk cannot complete — a host's shadow root is closed and so
+    // cannot be re-entered from outside — it reports the leaf's measured in-root
+    // count instead. That is a real measurement rather than an assumption, and a
+    // selector that cannot reach past a closed root cannot be resolved by a
+    // consumer either.
+    _countShadowChainMatches(segments) {
+      const leafCount = segments[segments.length - 1].matchCount;
+      if (segments.length < 2) {
+        return leafCount;
+      }
+
+      let roots = [document];
+      for (let index = 0; index < segments.length; index += 1) {
+        const isLeaf = index === segments.length - 1;
+        const next = [];
+
+        for (const root of roots) {
+          for (const element of this.findCssMatches(root, segments[index].selector)) {
+            if (isLeaf) {
+              next.push(element);
+              continue;
+            }
+
+            // Only a shadow host can continue the chain; anything else matched by
+            // this segment is a dead end, not a match.
+            if (element.shadowRoot) {
+              next.push(element.shadowRoot);
+            }
+          }
+        }
+
+        if (next.length === 0) {
+          return leafCount;
+        }
+
+        roots = next;
+      }
+
+      return roots.length;
     }
 
     formatExactReference(reference) {
@@ -2435,8 +2502,7 @@
       this._buildAttributeBasedSelectors(element, summary, EXACT_SCORE_TABLE, {
         seen,
         list: options,
-        allowSiblingNth: true,
-        allowNthOfType: true
+        allowSiblingNth: true
       });
 
       // Stable data attributes (data-component, data-slot, etc.)
@@ -2612,7 +2678,7 @@
       });
 
       if (summary.role && label) {
-        const clippedLabel = this.clipText(label, 80);
+        const clippedLabel = this.clipText(label, MAX_LABEL_LENGTH);
         this.addLocatorCandidate(candidates, element, {
           kind: 'role-name',
           text: `role=${summary.role} name="${this.escapeAttributeValue(clippedLabel)}"`,
@@ -2623,7 +2689,7 @@
       }
 
       if (label && (summary.tag === 'button' || summary.tag === 'a')) {
-        const clippedLabel = this.clipText(label, 80);
+        const clippedLabel = this.clipText(label, MAX_LABEL_LENGTH);
         this.addLocatorCandidate(candidates, element, {
           kind: 'tag-text',
           text: `${summary.tag} text="${this.escapeAttributeValue(clippedLabel)}"`,
@@ -2722,23 +2788,40 @@
       return rootNode instanceof ShadowRoot ? rootNode : document;
     }
 
+    // The transient query cache (active during buildCapture) is keyed by root
+    // object, not by a document/shadow flag — a single capture can query several
+    // distinct shadow roots, and a shared key would hand one root's results to
+    // another.
+    _getQueryCacheForRoot(root) {
+      if (!this._queryCache) {
+        return null;
+      }
+
+      let cache = this._queryCache.get(root);
+      if (!cache) {
+        cache = new Map();
+        this._queryCache.set(root, cache);
+      }
+
+      return cache;
+    }
+
     findCssMatches(root, selector) {
-      // Check the transient query cache (active during buildCapture) to avoid
-      // redundant querySelectorAll calls when exact and locator paths share
-      // the same selector.
-      if (this._queryCache) {
-        const cacheKey = `${root === document ? 'd' : 's'}::${selector}`;
-        const cached = this._queryCache.get(cacheKey);
+      // Check the transient query cache to avoid redundant querySelectorAll calls
+      // when the exact and locator paths share the same selector.
+      const cache = this._getQueryCacheForRoot(root);
+      if (cache) {
+        const cached = cache.get(selector);
         if (cached !== undefined) {
           return cached;
         }
 
         try {
           const result = Array.from(root.querySelectorAll(selector));
-          this._queryCache.set(cacheKey, result);
+          cache.set(selector, result);
           return result;
         } catch (_error) {
-          this._queryCache.set(cacheKey, []);
+          cache.set(selector, []);
           return [];
         }
       }
@@ -2756,9 +2839,9 @@
     // When the query cache is active, derives the count from cached arrays to
     // avoid a second querySelectorAll call.
     countCssMatches(root, selector, limit) {
-      if (this._queryCache) {
-        const cacheKey = `${root === document ? 'd' : 's'}::${selector}`;
-        const cached = this._queryCache.get(cacheKey);
+      const cache = this._getQueryCacheForRoot(root);
+      if (cache) {
+        const cached = cache.get(selector);
         if (cached !== undefined) {
           const count = cached.length;
           return limit !== undefined && count > limit ? limit : count;
@@ -2776,19 +2859,99 @@
 
     findRoleNameMatches(root, role, name) {
       const selector = this.getRoleQuerySelector(role);
-      return Array.from(root.querySelectorAll(selector)).filter((element) => {
+      const budget = { remaining: MAX_TEXT_MATCH_CONFIRMATIONS };
+      const matches = [];
+
+      for (const element of root.querySelectorAll(selector)) {
+        // Role check first: it reads one attribute and rejects most of the
+        // stack before any text is touched.
         if (this.getElementRole(element) !== role) {
-          return false;
+          continue;
         }
 
-        return this.getPrimaryLabel(this.summarizeElement(element)) === name;
-      });
+        if (this._matchesPrimaryLabel(element, name, budget)) {
+          matches.push(element);
+        }
+      }
+
+      return matches;
     }
 
     findTagTextMatches(root, tag, textValue) {
-      return Array.from(root.querySelectorAll(tag)).filter((element) => {
-        return this.getPrimaryLabel(this.summarizeElement(element)) === textValue;
-      });
+      const budget = { remaining: MAX_TEXT_MATCH_CONFIRMATIONS };
+      const matches = [];
+
+      for (const element of root.querySelectorAll(tag)) {
+        if (this._matchesPrimaryLabel(element, textValue, budget)) {
+          matches.push(element);
+        }
+      }
+
+      return matches;
+    }
+
+    // Attribute-only half of getPrimaryLabel's precedence chain. Every source
+    // here is a plain attribute or a sibling lookup, so none of it forces layout.
+    _getAttributeLabel(element) {
+      return this.firstNonEmpty(
+        element.getAttribute('aria-label') || '',
+        this.getAriaLabelledByText(element),
+        this.getAssociatedLabelText(element),
+        element.getAttribute('alt') || '',
+        element.getAttribute('placeholder') || '',
+        element.getAttribute('title') || '',
+        this.getValueLabelText(element),
+        this.getMediaDescription(element)
+      );
+    }
+
+    // Equality test against getPrimaryLabel(summarizeElement(element)) that skips
+    // the full summary and reaches innerText only when it has to.
+    //
+    // getPrimaryLabel reduces to firstNonEmpty(attributeLabel, innerText, name),
+    // because every source it lists ahead of summary.text already appears inside
+    // extractElementText. So an element with any attribute label never needs its
+    // text read at all. When it has none, textContent answers the common case for
+    // free; innerText — which forces layout — is consulted only for elements whose
+    // textContent still plausibly contains the expected label, and only until the
+    // budget runs out. These filters run over every node querySelectorAll returns,
+    // which on a page of hundreds of buttons was a reflow per element per copy.
+    _matchesPrimaryLabel(element, expected, budget) {
+      if (!expected) {
+        return false;
+      }
+
+      const attributeLabel = this._getAttributeLabel(element);
+      if (attributeLabel) {
+        return attributeLabel === expected;
+      }
+
+      const textContent = this.normalizeWhitespace(element.textContent || '');
+      if (textContent === expected) {
+        return true;
+      }
+
+      if (!textContent) {
+        // No text anywhere, so the label falls through to the name attribute.
+        return this.normalizeWhitespace(element.getAttribute('name') || '') === expected;
+      }
+
+      // innerText can still differ from textContent: it drops hidden subtrees and
+      // inserts separators at block boundaries. It never invents non-whitespace
+      // characters though, so if the expected label's characters are absent from
+      // textContent, innerText cannot match either.
+      if (!stripWhitespace(textContent).includes(stripWhitespace(expected))) {
+        return false;
+      }
+
+      if (budget.remaining <= 0) {
+        // Out of budget and genuinely ambiguous. Count it as a match so the
+        // output over-reports rather than claiming an unverified uniqueness.
+        return true;
+      }
+
+      budget.remaining -= 1;
+      return this.normalizeWhitespace(element.innerText || element.textContent || '') === expected;
     }
 
     getRoleQuerySelector(role) {
@@ -2875,7 +3038,7 @@
       );
 
       if (label) {
-        return `${kind} "${this.clipText(label, 80)}"`;
+        return `${kind} "${this.clipText(label, MAX_LABEL_LENGTH)}"`;
       }
 
       return kind;
@@ -3033,9 +3196,7 @@
       this._buildAttributeBasedSelectors(element, summary, LOCATOR_SCORE_TABLE, {
         seen,
         list: variants,
-        allowSiblingNth: true,
-        classLimit,
-        allowNthOfType
+        allowSiblingNth: true
       });
 
       const usefulClasses = this.getUsefulClasses(element, classLimit);
@@ -3192,6 +3353,8 @@
     // Elements larger than 50% of the viewport are skipped since they provide
     // limited visual value at high memory cost.
     static SCREENSHOT_MAX_VIEWPORT_FRACTION = 0.5;
+    // The service worker's CAPTURE_RESPONSE_TIMEOUT_MS must stay strictly below
+    // this value so it always resolves the channel first. See background.js.
     static CAPTURE_RESPONSE_TIMEOUT_MS = 3000;
 
     // Captures a cropped screenshot of the target element's bounding rect.
